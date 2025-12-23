@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Live Feed{% endblock %}
+
+{% block head %}
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+{% endblock %}
+
+{% block content %}
+<div class="video-container">
+    <video id="live-video" controls autoplay muted playsinline></video>
+</div>
+
+<div class="clips-section">
+    <h2>Recorded Clips</h2>
+    {% if clips %}
+    <div class="clips-grid">
+        {% for clip in clips %}
+        <div class="clip-box">
+            <a href="{{ url_for('play_clip', filename=clip.filename) }}" class="clip-thumbnail-link">
+                <div class="clip-thumbnail">
+                    {% if clip.thumbnail %}
+                    <img src="{{ url_for('static', filename=clip.thumbnail) }}" alt="Thumbnail for {{ clip.human_label }}">
+                    {% else %}
+                    <p>▶ Play Clip</p>
+                    {% endif %}
+                </div>
+            </a>
+            <div class="clip-info">
+                <p>{{ clip.human_label }}</p>
+            </div>
+            <div class="clip-actions">
+                <a href="{{ url_for('static', filename='clips/' + clip.filename) }}" download class="action-icon" title="Download">
+                    <img src="{{ url_for('static', filename='download.svg') }}" alt="Download">
+                </a>
+                <button class="action-icon delete-button" data-filename="{{ clip.filename }}" title="Delete">
+                    <img src="{{ url_for('static', filename='delete.svg') }}" alt="Delete">
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p>No clips recorded yet.</p>
+    {% endif %}
+
+    <div class="gallery-link-container" style="text-align: center; margin-top: 2rem;">
+        <a href="{{ url_for('gallery') }}" class="back-link">Show All Clips...</a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const video = document.getElementById('live-video');
+        const videoSrc = '/static/hls/stream.m3u8';
+
+        const setupHls = () => {
+            if (Hls.isSupported()) {
+                const hls = new Hls();
+                hls.loadSource(videoSrc);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    if (data.fatal) {
+                        console.error('HLS.js fatal error:', data);
+                        setTimeout(setupHls, 5000);
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = videoSrc;
+            }
+        };
+
+        setupHls();
+
+        video.play().catch(error => {
+            console.log("Autoplay was prevented. User interaction is required to start the video.");
+        });
+
+        // --- Delete Button Logic ---
+        const clipsGrid = document.querySelector('.clips-grid');
+        if (clipsGrid) {
+            clipsGrid.addEventListener('click', function(event) {
+                const deleteButton = event.target.closest('.delete-button');
+                if (!deleteButton) return;
+
+                event.preventDefault(); // Stop the link from being followed
+                event.stopPropagation(); // Stop the event from bubbling up
+
+                const filename = deleteButton.dataset.filename;
+                if (confirm(`Are you sure you want to delete the clip "${filename}"?`)) {
+                    fetch(`/delete/${filename}`, {
+                        method: 'POST',
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            // Remove the clip's parent element from the page
+                            const clipBox = deleteButton.closest('.clip-box');
+                            if (clipBox) {
+                                clipBox.style.transition = 'opacity 0.5s';
+                                clipBox.style.opacity = '0';
+                                setTimeout(() => clipBox.remove(), 500);
+                            }
+                        } else {
+                            alert(`Error deleting file: ${data.error || 'Unknown error'}`);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while trying to delete the file.');
+                    });
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="settings-container">
+    
+    <div class="status-indicators">
+        <h3>System Status</h3>
+        <div class="status-item">
+            <span class="status-light" id="app-status-light"></span>
+            <span class="status-label">Web Server</span>
+        </div>
+        <div class="status-item">
+            <span class="status-light" id="streamer-status-light"></span>
+            <span class="status-label">Camera Streamer</span>
+        </div>
+    </div>
+
+    <form class="settings-form" action="{{ url_for('settings_route') }}" method="post">
+        <h3>Configuration</h3>
+        <label for="sensitivity">Motion Detection Sensitivity:</label>
+        <input type="range" id="sensitivity" name="sensitivity" min="1" max="100" value="{{ sensitivity }}">
+        
+        <label for="duration">Clip Duration (seconds):</label>
+        <input type="number" id="duration" name="duration" min="3" max="30" value="{{ duration }}">
+        
+        <button type="submit">Save Settings</button>
+    </form>
+</div>
+
+<style>
+    .status-indicators { margin-bottom: 2rem; }
+    .status-item { display: flex; align-items: center; margin-bottom: 0.5rem; }
+    .status-light {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        margin-right: 10px;
+        background-color: #ffc107; /* Yellow (default) */
+        transition: background-color 0.5s;
+    }
+    .status-light.green { background-color: #28a745; }
+    .status-light.red { background-color: #dc3545; }
+    .status-label { font-size: 1rem; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const appStatusLight = document.getElementById('app-status-light');
+        const streamerStatusLight = document.getElementById('streamer-status-light');
+
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    // App Server Status
+                    appStatusLight.classList.remove('green', 'red', 'yellow');
+                    if (data.app_server) {
+                        appStatusLight.classList.add(data.app_server);
+                    }
+
+                    // Streamer Status
+                    streamerStatusLight.classList.remove('green', 'red', 'yellow');
+                    if (data.streamer) {
+                        streamerStatusLight.classList.add(data.streamer);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    appStatusLight.classList.remove('green', 'yellow');
+                    appStatusLight.classList.add('red');
+                    streamerStatusLight.classList.remove('green', 'yellow');
+                    streamerStatusLight.classList.add('red');
+                });
+        }
+
+        // Update status immediately on page load and then every 5 seconds
+        updateStatus();
+        setInterval(updateStatus, 5000);
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Clip Player{% endblock %}
+
+{% block content %}
+<div class="player-container">
+    <div class="player-video-wrapper">
+        <video width="100%" controls autoplay playsinline>
+            <source src="{{ url_for('static', filename='clips/' + filename) }}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+        <div class="clip-actions">
+            <a href="{{ url_for('static', filename='clips/' + filename) }}" download class="action-icon" title="Download">
+                <img src="{{ url_for('static', filename='download.svg') }}" alt="Download">
+            </a>
+            <button class="action-icon delete-button" data-filename="{{ filename }}" title="Delete">
+                <img src="{{ url_for('static', filename='delete.svg') }}" alt="Delete">
+            </button>
+        </div>
+    </div>
+    <a href="{{ url_for('gallery') }}" class="back-link" style="margin-top: 1rem; display: inline-block;">« Back to Gallery</a>
+</div>
+
+<style>
+    /* Show the icons on the player by default */
+    .player-video-wrapper .clip-actions {
+        opacity: 0.2;
+    }
+    .player-video-wrapper:hover .clip-actions {
+        opacity: 0.9;
+    }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const deleteButton = document.querySelector('.delete-button');
+        if (deleteButton) {
+            deleteButton.addEventListener('click', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const filename = deleteButton.dataset.filename;
+                if (confirm(`Are you sure you want to delete the clip "${filename}"?`)) {
+                    fetch(`/delete/${filename}`, {
+                        method: 'POST',
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            // On successful deletion, go back to the main page
+                            alert('Clip deleted.');
+                            window.location.href = "{{ url_for('index') }}";
+                        } else {
+                            alert(`Error deleting file: ${data.error || 'Unknown error'}`);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while trying to delete the file.');
+                    });
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

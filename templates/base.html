@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bird-Watcher - {% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <a href="{{ url_for('index') }}" style="text-decoration: none; color: inherit;">Bird-Watcher</a>
+                {% if subtitle %}<span class="subtitle">: {{ subtitle }}</span>{% endif %}
+            </h1>
+            <div class="nav-icons">
+                {# Show Home icon on any page that isn't the index #}
+                {% if request.endpoint != 'index' %}
+                    <a href="{{ url_for('index') }}"><img src="{{ url_for('static', filename='home.svg') }}" alt="Home"></a>
+                {% endif %}
+                {# Show Settings icon only on the index page #}
+                {% if request.endpoint == 'index' %}
+                    <a href="{{ url_for('settings_route') }}"><img src="{{ url_for('static', filename='gear.svg') }}" alt="Settings"></a>
+                {% endif %}
+            </div>
+        </header>
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

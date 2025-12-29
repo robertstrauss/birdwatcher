@@ -2,3 +2,4 @@ Flask
 numpy
 picamera2
 opencv-python-headless
+pyaudio

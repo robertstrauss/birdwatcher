@@ -10,6 +10,7 @@ from picamera2.outputs import FfmpegOutput
 from picamera2.encoders import H264Encoder
 from libcamera import controls
 import numpy as np
+import pyaudio
 
 # --- File/Directory Paths ---
 clips_dir = "clips"
@@ -28,6 +29,24 @@ video_config = None
 is_recording = False
 motion_detected_time = None
 app_running = True
+audio_device_index = None
+
+# --- Audio Constants ---
+AUDIO_RATE = 44100
+AUDIO_FORMAT = pyaudio.paInt16
+AUDIO_CHANNELS = 1
+
+def find_audio_device(p, target_name="USB"):
+    """Finds the index of an audio device containing target_name."""
+    info = p.get_host_api_info_by_index(0)
+    num_devices = info.get('deviceCount')
+    for i in range(num_devices):
+        device_info = p.get_device_info_by_host_api_device_index(0, i)
+        if target_name in device_info.get('name', ''):
+            logging.info(f"Found audio device '{device_info['name']}' at index {i}")
+            return i
+    logging.warning(f"Audio device containing '{target_name}' not found.")
+    return None
 
 def load_settings():
     """Loads settings from file, returns UI sensitivity and duration."""
@@ -62,7 +81,7 @@ def get_segments_from_playlist():
     return segments
 
 def record_clip():
-    """Copies HLS segments to create a motion clip."""
+    """Records a video clip with audio directly to a file."""
     global is_recording
     if is_recording: return
     
@@ -70,36 +89,66 @@ def record_clip():
     logging.info("Starting clip recording...")
     
     _, clip_duration = load_settings()
-    # Wait for the desired clip length to be buffered.
-    # This is a simple approach; a more advanced one could monitor segment creation.
-    time.sleep(clip_duration)
-
-    segments_to_record = get_segments_from_playlist()
-    if not segments_to_record:
-        logging.warning("No HLS segments found in playlist to record.")
-        is_recording = False
-        return
-
-    concat_file_path = os.path.join(hls_dir, 'concat.txt')
-    with open(concat_file_path, 'w') as f:
-        for segment in segments_to_record:
-            f.write(f"file '{os.path.basename(segment)}'\n")
-
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
     output_filename = os.path.join(clips_dir, f"{timestamp}.mp4")
-    
-    ffmpeg_cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', concat_file_path, '-c', 'copy', output_filename]
-    
-    try:
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        logging.error(f"ffmpeg clip creation failed! stderr: {e.stderr}")
-        os.remove(concat_file_path)
-        is_recording = False
-        return
-        
-    os.remove(concat_file_path)
 
+    # --- FFmpeg Command for Recording ---
+    # This command will take raw H264 video and raw audio from stdin,
+    # and mux them into an MP4 file.
+    record_ffmpeg_cmd = [
+        'ffmpeg', '-y',
+        '-f', 'h264', '-i', '-',                  # Video from stdin
+        '-f', 's16le', '-ar', str(AUDIO_RATE), '-ac', str(AUDIO_CHANNELS), '-i', '-', # Audio from stdin
+        '-c:v', 'copy',                           # Copy video stream
+        '-c:a', 'aac', '-b:a', '128k',             # Encode audio to AAC
+        output_filename
+    ]
+
+    # We need a new encoder for recording because the main one is for HLS
+    clip_encoder = H264Encoder(bitrate=5000000)
+    
+    # Start a new PyAudio stream for the recording
+    p = pyaudio.PyAudio()
+    audio_stream = p.open(
+        format=AUDIO_FORMAT,
+        channels=AUDIO_CHANNELS,
+        rate=AUDIO_RATE,
+        input=True,
+        input_device_index=audio_device_index,
+        frames_per_buffer=1024
+    )
+
+    # Start the ffmpeg process
+    ffmpeg_proc = subprocess.Popen(record_ffmpeg_cmd, stdin=subprocess.PIPE)
+
+    # Create a thread to pipe audio to ffmpeg
+    audio_pipe_thread = threading.Thread(
+        target=pipe_audio_to_ffmpeg,
+        args=(audio_stream, ffmpeg_proc)
+    )
+    audio_pipe_thread.daemon = True
+    audio_pipe_thread.start()
+
+    # Start recording video to the ffmpeg process
+    picam2.start_encoder(clip_encoder, ffmpeg_proc.stdin)
+    
+    time.sleep(clip_duration) # Record for the specified duration
+
+    # Stop everything
+    picam2.stop_encoder(clip_encoder)
+    
+    # The audio thread will stop automatically when the pipe is closed
+    if audio_stream.is_active():
+        audio_stream.stop_stream()
+        audio_stream.close()
+    p.terminate()
+    
+    ffmpeg_proc.stdin.close()
+    ffmpeg_proc.wait()
+
+    logging.info(f"Clip saved: {output_filename}")
+
+    # --- Thumbnail Generation ---
     thumbnail_filename = os.path.join(thumbnails_dir, f"{timestamp}.jpg")
     ffmpeg_thumb_cmd = ['ffmpeg', '-i', output_filename, '-ss', '00:00:01', '-vframes', '1', thumbnail_filename]
     
@@ -109,7 +158,6 @@ def record_clip():
     except subprocess.CalledProcessError as e:
         logging.error(f"Thumbnail generation failed! stderr: {e.stderr}")
         
-    logging.info(f"Clip saved: {output_filename}")
     is_recording = False
 
 def motion_detection_loop():
@@ -147,6 +195,21 @@ def motion_detection_loop():
         prev_frame = current_frame_y
         time.sleep(0.1)
 
+def pipe_audio_to_ffmpeg(audio_stream, ffmpeg_process):
+    """Reads from audio stream and writes to ffmpeg's stdin."""
+    while app_running:
+        try:
+            data = audio_stream.read(1024)
+            ffmpeg_process.stdin.write(data)
+        except IOError as e:
+            # This can happen if the ffmpeg process closes stdin
+            logging.warning(f"IOError in audio pipe: {e}")
+            break
+        except Exception as e:
+            logging.error(f"Error in audio pipe: {e}")
+            break
+    logging.info("Audio pipe thread finished.")
+
 def streamer_main(status_dict, running_flag):
     """
     The main entry point for the streamer logic.
@@ -156,11 +219,17 @@ def streamer_main(status_dict, running_flag):
     HLS_SEGMENT_TIME = 2
     HLS_LIST_SIZE = 5
     FPS = 15
+    AUDIO_RATE = 44100
+    AUDIO_FORMAT = pyaudio.paInt16
+    AUDIO_CHANNELS = 1
 
-    global picam2, video_config, app_running
+    global picam2, video_config, app_running, audio_device_index
     app_running = running_flag # Use the shared running flag
     
     status_dict['streamer'] = 'yellow'
+    
+    p = pyaudio.PyAudio()
+    audio_device_index = find_audio_device(p)
     
     try:
         picam2 = Picamera2()
@@ -171,11 +240,13 @@ def streamer_main(status_dict, running_flag):
         )
         picam2.configure(video_config)
 
-        # This command tells ffmpeg to expect a raw h264 stream (-f h264)
-        # and to copy it without re-encoding (-c:v copy)
+        # This command tells ffmpeg to expect a raw h264 stream from the camera
+        # and a raw audio stream from stdin, then mux them into an HLS stream.
         ffmpeg_command = [
-            '-f', 'h264',
-            '-c:v', 'copy',
+            '-f', 'h264', '-i', '-',                  # Video input from stdin
+            '-f', 's16le', '-ar', str(AUDIO_RATE), '-ac', str(AUDIO_CHANNELS), '-i', '-', # Audio input from stdin
+            '-c:v', 'copy',                           # Copy video without re-encoding
+            '-c:a', 'aac', '-b:a', '128k',             # Encode audio to AAC
             '-f', 'hls',
             '-hls_time', str(HLS_SEGMENT_TIME),
             '-hls_list_size', str(HLS_LIST_SIZE),
@@ -186,8 +257,31 @@ def streamer_main(status_dict, running_flag):
         
         hls_output = FfmpegOutput(' '.join(ffmpeg_command))
         encoder = H264Encoder(bitrate=5000000, repeat=True, iperiod=FPS)
+        
+        # Start audio stream
+        audio_stream = None
+        if audio_device_index is not None:
+            audio_stream = p.open(
+                format=AUDIO_FORMAT,
+                channels=AUDIO_CHANNELS,
+                rate=AUDIO_RATE,
+                input=True,
+                input_device_index=audio_device_index,
+                frames_per_buffer=1024
+            )
+            logging.info("Audio stream opened.")
+
         picam2.start_recording(encoder, hls_output)
         
+        # Start audio piping thread if audio is available
+        if audio_stream:
+            audio_thread = threading.Thread(
+                target=pipe_audio_to_ffmpeg,
+                args=(audio_stream, hls_output.proc)
+            )
+            audio_thread.daemon = True
+            audio_thread.start()
+
         logging.info("Camera started and HLS streaming is active.")
         status_dict['streamer'] = 'green'
 
@@ -197,6 +291,10 @@ def streamer_main(status_dict, running_flag):
         logging.error(f"Streamer crashed: {e}")
         status_dict['streamer'] = 'red'
     finally:
+        if 'audio_stream' in locals() and audio_stream and audio_stream.is_active():
+            audio_stream.stop_stream()
+            audio_stream.close()
+        p.terminate()
         if picam2 and picam2.is_open:
             picam2.stop_recording()
         status_dict['streamer'] = 'red'
